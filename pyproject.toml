@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "gif-battle-bot"
+version = "0.1.0"
+description = "A Discord bot that turns GIF posting into a live battle game."
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+  "discord.py",
+  "python-dotenv",
+  "sqlalchemy>=2.0",
+  "psycopg[binary]>=3.1",
+]
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
