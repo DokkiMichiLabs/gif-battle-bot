@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 
 @dataclass
@@ -64,6 +64,7 @@ class BattleRound:
     channel_id: int
     started_at: datetime
     last_activity_at: datetime
+    deadline_at: datetime
     last_gif_user_id: int
     round_number: int = 0
     participant_ids: set[int] = field(default_factory=set)
@@ -71,7 +72,13 @@ class BattleRound:
     status_message_id: int | None = None
 
     @classmethod
-    def create(cls, channel_id: int, user_id: int, message_id: int) -> "BattleRound":
+    def create(
+        cls,
+        channel_id: int,
+        user_id: int,
+        message_id: int,
+        battle_timeout_seconds: int,
+    ) -> "BattleRound":
         now = datetime.now(timezone.utc)
         gif_message = GifMessage(
             message_id=message_id,
@@ -81,6 +88,7 @@ class BattleRound:
             channel_id=channel_id,
             started_at=now,
             last_activity_at=now,
+            deadline_at=now + timedelta(seconds=battle_timeout_seconds),
             last_gif_user_id=user_id,
             round_number=0,
             participant_ids={user_id},
@@ -99,6 +107,7 @@ class BattleRound:
             "channel_id": self.channel_id,
             "started_at": self.started_at.isoformat(),
             "last_activity_at": self.last_activity_at.isoformat(),
+            "deadline_at": self.deadline_at.isoformat(),
             "last_gif_user_id": self.last_gif_user_id,
             "round_number": self.round_number,
             "participant_ids": sorted(self.participant_ids),
@@ -115,6 +124,11 @@ class BattleRound:
             channel_id=int(data["channel_id"]),
             started_at=datetime.fromisoformat(data["started_at"]),
             last_activity_at=datetime.fromisoformat(data["last_activity_at"]),
+            deadline_at=(
+                datetime.fromisoformat(data["deadline_at"])
+                if data.get("deadline_at")
+                else datetime.fromisoformat(data["last_activity_at"])
+            ),
             last_gif_user_id=int(data["last_gif_user_id"]),
             round_number=int(data.get("round_number", 0)),
             participant_ids={int(user_id) for user_id in data.get("participant_ids", [])},

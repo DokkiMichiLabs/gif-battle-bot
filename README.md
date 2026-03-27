@@ -37,7 +37,8 @@ This makes battles fair across time zones and keeps the game running naturally w
 - A new battle starts when someone posts a GIF
 - Users battle by posting GIFs in the configured channel
 - The current leader is the most recent valid takeover
-- If the same user posts again, they do not reset the timer
+- If the same user posts again, they do not add more time
+- A new takeover adds only the configured time bonus to the current deadline
 - If the round expires, the current leader wins
 - The next GIF after an ended round starts a fresh round
 

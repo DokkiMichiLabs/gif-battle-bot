@@ -12,6 +12,7 @@ class Settings:
     discord_token: str
     battle_channel_id: int
     battle_timeout_seconds: int
+    takeover_time_bonus_seconds: int
     database_url: str
     champ_role_name: str
     chaos_role_name: str
@@ -58,9 +59,12 @@ def load_settings() -> Settings:
 
     channel_id = _get_required_int("BATTLE_CHANNEL_ID")
     timeout_seconds = _get_required_int("BATTLE_TIMEOUT_SECONDS")
+    takeover_time_bonus_seconds = _get_int("TAKEOVER_TIME_BONUS_SECONDS", 60)
 
     if timeout_seconds <= 0:
         raise ValueError("BATTLE_TIMEOUT_SECONDS must be greater than 0.")
+    if takeover_time_bonus_seconds <= 0:
+        raise ValueError("TAKEOVER_TIME_BONUS_SECONDS must be greater than 0.")
     if not champ_role_name:
         raise ValueError("CHAMP_ROLE_NAME cannot be empty.")
     if not chaos_role_name:
@@ -85,6 +89,7 @@ def load_settings() -> Settings:
         discord_token=token,
         battle_channel_id=channel_id,
         battle_timeout_seconds=timeout_seconds,
+        takeover_time_bonus_seconds=takeover_time_bonus_seconds,
         database_url=database_url,
         champ_role_name=champ_role_name,
         chaos_role_name=chaos_role_name,

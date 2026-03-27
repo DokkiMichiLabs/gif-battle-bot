@@ -13,11 +13,12 @@ from typing import Any
 class BattleUpdateResult:
     round_started: bool
     leader_changed: bool
-    timeout_reset: bool
+    time_bonus_applied: bool
     current_leader_user_id: int
     participant_count: int
     started_at: datetime
     last_activity_at: datetime
+    deadline_at: datetime
 
 
 class BattleManager:
@@ -53,6 +54,8 @@ class BattleManager:
         channel_id: int,
         user_id: int,
         message_id: int,
+        battle_timeout_seconds: int,
+        takeover_time_bonus_seconds: int,
     ) -> BattleUpdateResult:
         now = datetime.now(timezone.utc)
 
@@ -61,16 +64,18 @@ class BattleManager:
                 channel_id=channel_id,
                 user_id=user_id,
                 message_id=message_id,
+                battle_timeout_seconds=battle_timeout_seconds,
             )
             self.save_state()
             return BattleUpdateResult(
                 round_started=True,
                 leader_changed=True,
-                timeout_reset=True,
+                time_bonus_applied=False,
                 current_leader_user_id=self._active_round.last_gif_user_id,
                 participant_count=len(self._active_round.participant_ids),
                 started_at=self._active_round.started_at,
                 last_activity_at=self._active_round.last_activity_at,
+                deadline_at=self._active_round.deadline_at,
             )
 
         if self._active_round.channel_id != channel_id:
@@ -88,17 +93,19 @@ class BattleManager:
         if leader_changed:
             self._active_round.last_gif_user_id = user_id
             self._active_round.last_activity_at = now
+            self._active_round.deadline_at = self._active_round.deadline_at + timedelta(seconds=takeover_time_bonus_seconds)
 
         self.save_state()
 
         return BattleUpdateResult(
             round_started=False,
             leader_changed=leader_changed,
-            timeout_reset=leader_changed,
+            time_bonus_applied=leader_changed,
             current_leader_user_id=self._active_round.last_gif_user_id,
             participant_count=len(self._active_round.participant_ids),
             started_at=self._active_round.started_at,
             last_activity_at=self._active_round.last_activity_at,
+            deadline_at=self._active_round.deadline_at,
         )
 
     def record_reaction_add(
@@ -150,28 +157,28 @@ class BattleManager:
 
         return changed
 
-    def get_deadline(self, timeout_seconds: int) -> datetime | None:
+    def get_deadline(self) -> datetime | None:
         if self._active_round is None:
             return None
-        return self._active_round.last_activity_at + timedelta(seconds=timeout_seconds)
+        return self._active_round.deadline_at
 
-    def is_round_expired(self, timeout_seconds: int) -> bool:
+    def is_round_expired(self) -> bool:
         if self._active_round is None:
             return False
 
         now = datetime.now(timezone.utc)
-        deadline = self.get_deadline(timeout_seconds)
+        deadline = self.get_deadline()
 
         if deadline is None:
             return False
 
         return now >= deadline
 
-    def get_seconds_until_timeout(self, timeout_seconds: int) -> int | None:
+    def get_seconds_until_timeout(self) -> int | None:
         if self._active_round is None:
             return None
 
-        deadline = self.get_deadline(timeout_seconds)
+        deadline = self.get_deadline()
         if deadline is None:
             return None
 
