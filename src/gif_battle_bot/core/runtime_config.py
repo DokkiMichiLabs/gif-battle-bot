@@ -11,6 +11,7 @@ from gif_battle_bot.battle.points_manager import LevelConfig
 @dataclass
 class RuntimeConfigData:
     battle_timeout_seconds: int
+    takeover_time_bonus_seconds: int
     champ_role_name: str
     chaos_role_name: str
     participation_xp: int
@@ -27,6 +28,7 @@ class RuntimeConfig:
         self._path = Path(file_path)
         self.data = RuntimeConfigData(
             battle_timeout_seconds=defaults.battle_timeout_seconds,
+            takeover_time_bonus_seconds=defaults.takeover_time_bonus_seconds,
             champ_role_name=defaults.champ_role_name,
             chaos_role_name=defaults.chaos_role_name,
             participation_xp=defaults.participation_xp,

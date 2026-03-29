@@ -60,6 +60,10 @@ def current_chaos_role_name() -> str:
     return runtime_config.data.chaos_role_name
 
 
+def current_takeover_time_bonus_seconds() -> int:
+    return runtime_config.data.takeover_time_bonus_seconds
+
+
 def current_champ_role_name() -> str:
     return runtime_config.data.champ_role_name
 
@@ -92,18 +96,27 @@ def make_embed(title: str, description: str | None = None) -> discord.Embed:
     return embed
 
 
-def build_battle_status_embed(*, guild: discord.Guild | None, active_round, timeout_seconds: int) -> discord.Embed:
+def build_battle_status_embed(*, guild: discord.Guild | None, active_round) -> discord.Embed:
     leader_user_id = active_round.last_gif_user_id
     leader = guild.get_member(leader_user_id) if guild else None
     leader_name = leader.mention if leader else f"<@{leader_user_id}>"
-    deadline = active_round.last_activity_at + timedelta(seconds=timeout_seconds)
+    deadline = active_round.deadline_at
     started_line = format_discord_full_time(active_round.started_at)
-    embed = make_embed("🔥 GIF Battle Active", "The round stays alive until a different battler posts the next GIF.")
+    is_expired = discord.utils.utcnow() >= deadline
+
+    if is_expired:
+        embed = make_embed("⏳ GIF Battle Expired", "The deadline has passed. Closing this battle now.")
+    else:
+        embed = make_embed("🔥 GIF Battle Active", "A different battler can steal the lead and add a little more time to the round.")
+
     embed.add_field(name="Current Leader", value=leader_name, inline=True)
     embed.add_field(name="Participants", value=str(len(active_round.participant_ids)), inline=True)
     embed.add_field(name="GIFs", value=str(len(active_round.gif_messages)), inline=True)
     embed.add_field(name="Started", value=started_line, inline=False)
-    embed.add_field(name="Battle naps", value=format_discord_relative_time(deadline), inline=True)
+    if is_expired:
+        embed.add_field(name="Status", value="Expired — closing battle...", inline=True)
+    else:
+        embed.add_field(name="Time Remaining", value=format_discord_relative_time(deadline), inline=True)
     embed.add_field(name="Deadline", value=format_discord_full_time(deadline), inline=True)
     embed.add_field(name="Round", value=f"#{active_round.round_number}", inline=True)
     return embed
@@ -168,7 +181,8 @@ def build_champ_embed(guild: discord.Guild) -> discord.Embed:
 def build_admin_config_embed() -> discord.Embed:
     data = runtime_config.data
     embed = make_embed("🛠️ GIF Battle Config", "Live runtime settings saved by the bot.")
-    embed.add_field(name="Battle Timeout", value=f"{data.battle_timeout_seconds} sec", inline=True)
+    embed.add_field(name="Base Round Timeout", value=f"{data.battle_timeout_seconds} sec", inline=True)
+    embed.add_field(name="Time Added Per Takeover", value=f"{data.takeover_time_bonus_seconds} sec", inline=True)
     embed.add_field(name="Chaos Role", value=data.chaos_role_name, inline=True)
     embed.add_field(name="Champ Role", value=data.champ_role_name, inline=True)
     embed.add_field(name="Participation XP", value=str(data.participation_xp), inline=True)
@@ -194,7 +208,7 @@ def build_round_summary_embed(
     winner_progress = award_summary.level_progress_by_user_id[winner_user_id]
     meter = level_meter(winner_progress.progress_percent)
     title = "🏁 GIF Battle Closed" if not manual_end else "🛑 GIF Battle Ended by Admin"
-    subtitle = "The channel went quiet long enough. Last GIF standing takes it." if not manual_end else "An admin closed the round and locked in the current leader."
+    subtitle = "The battle timed out. Last GIF standing takes it." if not manual_end else "An admin closed the round and locked in the current leader."
     embed = make_embed(title, subtitle)
     embed.add_field(name="Round", value=f"#{finished_round.round_number}", inline=True)
     embed.add_field(name="Winner", value=winner_mention, inline=True)
@@ -305,7 +319,6 @@ async def upsert_battle_status_message(channel: discord.TextChannel) -> None:
     embed = build_battle_status_embed(
         guild=channel.guild,
         active_round=active_round,
-        timeout_seconds=current_timeout_seconds(),
     )
 
     status_message_id = battle_manager.get_status_message_id()
@@ -391,7 +404,7 @@ async def close_expired_round_if_needed(channel: discord.TextChannel) -> bool:
     if not battle_manager.has_active_round():
         return False
 
-    if not battle_manager.is_round_expired(current_timeout_seconds()):
+    if not battle_manager.is_round_expired():
         return False
 
     await close_active_round_and_announce(channel=channel, manual_end=False)
@@ -411,9 +424,9 @@ async def announce_battle_winner() -> None:
     await close_active_round_and_announce(channel=channel, manual_end=False)
 
 
-@tasks.loop(seconds=30)
+@tasks.loop(seconds=10)
 async def battle_expiry_loop() -> None:
-    if battle_manager.has_active_round() and battle_manager.is_round_expired(current_timeout_seconds()):
+    if battle_manager.has_active_round() and battle_manager.is_round_expired():
         await announce_battle_winner()
     else:
         channel = bot.get_channel(settings.battle_channel_id)
@@ -436,6 +449,7 @@ async def on_ready() -> None:
     logger.info("Logged in as %s (%s)", bot.user, bot.user.id if bot.user else "unknown")
     logger.info("Watching battle channel: %s", settings.battle_channel_id)
     logger.info("Battle timeout: %s seconds", current_timeout_seconds())
+    logger.info("Takeover time bonus: %s seconds", current_takeover_time_bonus_seconds())
     logger.info("Database URL configured.")
     logger.info("Champ role name: %s", current_champ_role_name())
     logger.info("Chaos role name: %s", current_chaos_role_name())
@@ -459,14 +473,17 @@ async def on_message(message: discord.Message) -> None:
             channel_id=message.channel.id,
             user_id=message.author.id,
             message_id=message.id,
+            battle_timeout_seconds=current_timeout_seconds(),
+            takeover_time_bonus_seconds=current_takeover_time_bonus_seconds(),
         )
         logger.info(
-            "GIF battle update | started=%s | leader_changed=%s | timeout_reset=%s | leader=%s | participants=%s | message_id=%s",
+            "GIF battle update | started=%s | leader_changed=%s | time_bonus_applied=%s | leader=%s | participants=%s | deadline=%s | message_id=%s",
             result.round_started,
             result.leader_changed,
-            result.timeout_reset,
+            result.time_bonus_applied,
             result.current_leader_user_id,
             result.participant_count,
+            result.deadline_at.isoformat(),
             message.id,
         )
 
@@ -568,8 +585,7 @@ async def battle_status_slash(interaction: discord.Interaction) -> None:
         embed=build_battle_status_embed(
             guild=interaction.guild,
             active_round=active_round,
-            timeout_seconds=current_timeout_seconds(),
-        ),
+            ),
         ephemeral=True,
     )
 
@@ -641,7 +657,7 @@ async def battle_status_prefix(ctx: commands.Context) -> None:
         await ctx.send("No active GIF Battle right now.")
         return
 
-    await ctx.send(embed=build_battle_status_embed(guild=ctx.guild, active_round=active_round, timeout_seconds=current_timeout_seconds()))
+    await ctx.send(embed=build_battle_status_embed(guild=ctx.guild, active_round=active_round))
 
 
 @bot.command(name="points", aliases=["profile"])
@@ -718,6 +734,7 @@ async def admin_config_show(interaction: discord.Interaction) -> None:
 @app_commands.choices(
     setting=[
         app_commands.Choice(name="battle_timeout_seconds", value="battle_timeout_seconds"),
+        app_commands.Choice(name="takeover_time_bonus_seconds", value="takeover_time_bonus_seconds"),
         app_commands.Choice(name="chaos_role_name", value="chaos_role_name"),
         app_commands.Choice(name="champ_role_name", value="champ_role_name"),
         app_commands.Choice(name="participation_xp", value="participation_xp"),
@@ -733,6 +750,7 @@ async def admin_config_set(interaction: discord.Interaction, setting: app_comman
     key = setting.value
     int_settings = {
         "battle_timeout_seconds",
+        "takeover_time_bonus_seconds",
         "participation_xp",
         "win_xp",
         "takeover_xp",
