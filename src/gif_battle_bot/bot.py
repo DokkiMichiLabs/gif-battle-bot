@@ -284,19 +284,49 @@ def build_level_up_embed(member: discord.Member, old_level: int, new_level: int,
 
 
 async def user_has_chaos_role(member: discord.Member) -> bool:
-    return discord.utils.get(member.roles, name=current_chaos_role_name()) is not None
+    logger.info(
+        "Role check | member=%s | required=%r | roles=%s",
+        member,
+        current_chaos_role_name(),
+        [role.name for role in member.roles],
+    )
+    target_name = current_chaos_role_name().strip().lower()
+    return any(role.name.strip().lower() == target_name for role in member.roles)
 
 
 async def ensure_chaos_access_for_context(ctx: commands.Context) -> bool:
+    logger.info(
+        "Prefix access check | user=%s (%s) | guild=%s | type=%s",
+        ctx.author,
+        ctx.author.id,
+        ctx.guild.id if ctx.guild else None,
+        type(ctx.author).__name__,
+    )
     if not isinstance(ctx.author, discord.Member):
         return False
     return await user_has_chaos_role(ctx.author)
 
 
 async def ensure_chaos_access_for_interaction(interaction: discord.Interaction) -> bool:
-    if not isinstance(interaction.user, discord.Member):
+    guild = interaction.guild
+    if guild is None:
         return False
-    return await user_has_chaos_role(interaction.user)
+
+    member: discord.Member | None = None
+
+    if isinstance(interaction.user, discord.Member):
+        member = interaction.user
+    else:
+        member = guild.get_member(interaction.user.id)
+        if member is None:
+            try:
+                member = await guild.fetch_member(interaction.user.id)
+            except discord.NotFound:
+                return False
+            except discord.HTTPException:
+                return False
+
+    return await user_has_chaos_role(member)
 
 
 async def send_chaos_role_required_response(target) -> None:
