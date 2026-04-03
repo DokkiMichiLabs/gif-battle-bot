@@ -442,32 +442,51 @@ async def close_expired_round_if_needed(channel: discord.TextChannel) -> bool:
 
 
 async def announce_battle_winner() -> None:
-    active_round = battle_manager.get_active_round()
-    if active_round is None:
-        return
+    try:
+        active_round = battle_manager.get_active_round()
+        if active_round is None:
+            return
 
-    channel = bot.get_channel(active_round.channel_id)
-    if channel is None or not isinstance(channel, discord.TextChannel):
-        logger.warning("Could not find battle text channel %s", active_round.channel_id)
-        return
+        channel = bot.get_channel(active_round.channel_id)
+        if not isinstance(channel, discord.TextChannel):
+            logger.warning("Could not find battle text channel %s", active_round.channel_id)
+            return
 
-    await close_active_round_and_announce(channel=channel, manual_end=False)
+        await close_active_round_and_announce(channel=channel, manual_end=False)
+
+    except Exception:
+        logger.exception("Failed to announce battle winner")
 
 
 @tasks.loop(seconds=10)
 async def battle_expiry_loop() -> None:
-    if battle_manager.has_active_round() and battle_manager.is_round_expired():
-        await announce_battle_winner()
-    else:
-        channel = bot.get_channel(settings.battle_channel_id)
-        if isinstance(channel, discord.TextChannel) and battle_manager.has_active_round():
-            await upsert_battle_status_message(channel)
+    try:
+        active_round = battle_manager.get_active_round()
+        if active_round is None:
+            return
 
+        channel = bot.get_channel(active_round.channel_id)
+        if not isinstance(channel, discord.TextChannel):
+            logger.warning("Could not resolve active battle channel %s", active_round.channel_id)
+            return
+
+        if battle_manager.is_round_expired():
+            logger.info("Round #%s expired — closing", active_round.round_number)
+            await close_active_round_and_announce(channel=channel, manual_end=False)
+            return
+
+        await upsert_battle_status_message(channel)
+
+    except Exception:
+        logger.exception("battle_expiry_loop crashed")
 
 @battle_expiry_loop.before_loop
 async def before_battle_expiry_loop() -> None:
     await bot.wait_until_ready()
 
+@battle_expiry_loop.error
+async def battle_expiry_loop_error(error: Exception) -> None:
+    logger.exception("Unhandled error in battle_expiry_loop: %s", error)
 
 @bot.event
 async def on_ready() -> None:
@@ -606,6 +625,10 @@ async def battle_status_slash(interaction: discord.Interaction) -> None:
         await interaction.response.send_message("This command only works in the battle channel.", ephemeral=True)
         return
 
+    channel = interaction.channel
+    if isinstance(channel, discord.TextChannel):
+        await close_expired_round_if_needed(channel)
+
     active_round = battle_manager.get_active_round()
     if active_round is None:
         await interaction.response.send_message("No active GIF Battle right now.", ephemeral=True)
@@ -615,7 +638,7 @@ async def battle_status_slash(interaction: discord.Interaction) -> None:
         embed=build_battle_status_embed(
             guild=interaction.guild,
             active_round=active_round,
-            ),
+        ),
         ephemeral=True,
     )
 
@@ -681,6 +704,9 @@ async def battle_status_prefix(ctx: commands.Context) -> None:
     if ctx.channel.id != settings.battle_channel_id:
         await ctx.send("This command only works in the battle channel.")
         return
+
+    if isinstance(ctx.channel, discord.TextChannel):
+        await close_expired_round_if_needed(ctx.channel)
 
     active_round = battle_manager.get_active_round()
     if active_round is None:
