@@ -93,8 +93,8 @@ class BattleManager:
         if leader_changed:
             self._active_round.last_gif_user_id = user_id
             self._active_round.last_activity_at = now
-            self._active_round.deadline_at = self._active_round.deadline_at + timedelta(seconds=takeover_time_bonus_seconds)
-
+            base_time = max(self._active_round.deadline_at, now)
+            self._active_round.deadline_at = base_time + timedelta(seconds=takeover_time_bonus_seconds)
         self.save_state()
 
         return BattleUpdateResult(

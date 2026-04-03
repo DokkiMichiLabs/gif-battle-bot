@@ -20,6 +20,7 @@ class DbBattleRound(Base):
     round_number: Mapped[int] = mapped_column(Integer, nullable=False)
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     last_activity_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    deadline_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     last_gif_user_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
     status_message_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -127,6 +128,7 @@ class PostgresStorage:
                 channel_id=db_round.channel_id,
                 started_at=db_round.started_at,
                 last_activity_at=db_round.last_activity_at,
+                deadline_at=db_round.deadline_at,
                 last_gif_user_id=db_round.last_gif_user_id,
                 round_number=db_round.round_number,
                 participant_ids=participant_ids,
@@ -153,6 +155,7 @@ class PostgresStorage:
                     round_number=battle_round.round_number,
                     started_at=battle_round.started_at,
                     last_activity_at=battle_round.last_activity_at,
+                    deadline_at=battle_round.deadline_at,
                     last_gif_user_id=battle_round.last_gif_user_id,
                     status_message_id=battle_round.status_message_id,
                     ended_at=None,
@@ -164,6 +167,7 @@ class PostgresStorage:
                 db_round.round_number = battle_round.round_number or db_round.round_number
                 db_round.started_at = battle_round.started_at
                 db_round.last_activity_at = battle_round.last_activity_at
+                db_round.deadline_at = battle_round.deadline_at
                 db_round.last_gif_user_id = battle_round.last_gif_user_id
                 db_round.status_message_id = battle_round.status_message_id
 
