@@ -24,6 +24,9 @@ class DbBattleRound(Base):
     last_gif_user_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
     status_message_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    frenzy_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    frenzy_announced: Mapped[bool] = mapped_column(nullable=False, default=False)
+    frenzy_message_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
 
     gif_messages: Mapped[list["DbGifMessage"]] = relationship(
         back_populates="battle_round",
@@ -134,6 +137,9 @@ class PostgresStorage:
                 participant_ids=participant_ids,
                 gif_messages=gif_messages,
                 status_message_id=db_round.status_message_id,
+                frenzy_started_at=db_round.frenzy_started_at,
+                frenzy_announced=db_round.frenzy_announced,
+                frenzy_message_id=db_round.frenzy_message_id,
             )
 
     def save_active_round(self, battle_round: BattleRound | None) -> None:
@@ -159,6 +165,9 @@ class PostgresStorage:
                     last_gif_user_id=battle_round.last_gif_user_id,
                     status_message_id=battle_round.status_message_id,
                     ended_at=None,
+                    frenzy_started_at=battle_round.frenzy_started_at,
+                    frenzy_announced=battle_round.frenzy_announced,
+                    frenzy_message_id=battle_round.frenzy_message_id,
                 )
                 session.add(db_round)
                 session.flush()
@@ -170,6 +179,9 @@ class PostgresStorage:
                 db_round.deadline_at = battle_round.deadline_at
                 db_round.last_gif_user_id = battle_round.last_gif_user_id
                 db_round.status_message_id = battle_round.status_message_id
+                db_round.frenzy_started_at = battle_round.frenzy_started_at
+                db_round.frenzy_announced = battle_round.frenzy_announced
+                db_round.frenzy_message_id = battle_round.frenzy_message_id
 
                 for existing in list(db_round.gif_messages):
                     session.delete(existing)

@@ -71,6 +71,10 @@ class BattleRound:
     gif_messages: dict[int, GifMessage] = field(default_factory=dict)
     status_message_id: int | None = None
 
+    frenzy_started_at: datetime | None = None
+    frenzy_announced: bool = False
+    frenzy_message_id: int | None = None
+
     @classmethod
     def create(
         cls,
@@ -94,6 +98,9 @@ class BattleRound:
             participant_ids={user_id},
             gif_messages={message_id: gif_message},
             status_message_id=None,
+            frenzy_started_at=None,
+            frenzy_announced=False,
+            frenzy_message_id=None,
         )
 
     def add_gif_message(self, message_id: int, author_id: int) -> None:
@@ -116,6 +123,11 @@ class BattleRound:
                 for message_id, gif_message in self.gif_messages.items()
             },
             "status_message_id": self.status_message_id,
+            "frenzy_started_at": (
+                self.frenzy_started_at.isoformat() if self.frenzy_started_at is not None else None
+            ),
+            "frenzy_announced": self.frenzy_announced,
+            "frenzy_message_id": self.frenzy_message_id,
         }
 
     @classmethod
@@ -139,6 +151,17 @@ class BattleRound:
             status_message_id=(
                 int(data["status_message_id"])
                 if data.get("status_message_id") is not None
+                else None
+            ),
+            frenzy_started_at=(
+                datetime.fromisoformat(data["frenzy_started_at"])
+                if data.get("frenzy_started_at")
+                else None
+            ),
+            frenzy_announced=bool(data.get("frenzy_announced", False)),
+            frenzy_message_id=(
+                int(data["frenzy_message_id"])
+                if data.get("frenzy_message_id") is not None
                 else None
             ),
         )

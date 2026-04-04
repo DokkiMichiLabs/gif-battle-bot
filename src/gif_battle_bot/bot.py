@@ -15,6 +15,9 @@ from gif_battle_bot.services.role_manager import RoleManager
 from gif_battle_bot.core.runtime_config import RuntimeConfig
 from gif_battle_bot.storage.postgres import PostgresStorage
 
+FRENZY_THRESHOLD_SECONDS = 60
+FRENZY_TAKEOVER_XP_MULTIPLIER = 2
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
@@ -95,30 +98,102 @@ def make_embed(title: str, description: str | None = None) -> discord.Embed:
     embed.timestamp = discord.utils.utcnow()
     return embed
 
+async def maybe_announce_frenzy(channel: discord.TextChannel) -> None:
+    active_round = battle_manager.get_active_round()
+    if active_round is None:
+        return
+
+    if not battle_manager.should_announce_frenzy():
+        return
+
+    embed = make_embed(
+        "⚠️ FINAL FRENZY",
+        (
+           f"The last **{FRENZY_THRESHOLD_SECONDS} seconds** have begun.\n"
+            "**No more time extensions** from takeovers.\n"
+            "The last GIF standing when the countdown ends wins."
+        ),
+    )
+    embed.color = discord.Color.orange()
+    embed.add_field(
+        name="Countdown",
+        value=format_discord_relative_time(active_round.deadline_at),
+        inline=True,
+    )
+    embed.add_field(
+        name="Frenzy Bonuses",
+        value=(
+            f"Takeover XP: **x{FRENZY_TAKEOVER_XP_MULTIPLIER}**\n"
+            "Time Added Per Takeover: **+0 sec**\n"
+            "Winner / participation points: **unchanged**"
+        ),
+        inline=False,
+    )
+    embed.add_field(name="Round", value=f"#{active_round.round_number}", inline=True)
+
+    frenzy_message = await channel.send(embed=embed)
+    battle_manager.set_frenzy_message_id(frenzy_message.id)
+    battle_manager.mark_frenzy_announced()
+
 
 def build_battle_status_embed(*, guild: discord.Guild | None, active_round) -> discord.Embed:
     leader_user_id = active_round.last_gif_user_id
     leader = guild.get_member(leader_user_id) if guild else None
     leader_name = leader.mention if leader else f"<@{leader_user_id}>"
-    deadline = active_round.deadline_at
+    deadline = active_round.deadline_at or active_round.last_activity_at
     started_line = format_discord_full_time(active_round.started_at)
     is_expired = discord.utils.utcnow() >= deadline
+    is_frenzy = active_round.frenzy_started_at is not None and not is_expired
 
     if is_expired:
         embed = make_embed("⏳ GIF Battle Expired", "The deadline has passed. Closing this battle now.")
+        embed.color = discord.Color.dark_grey()
+    elif is_frenzy:
+        embed = make_embed(
+            "⚠️ FINAL FRENZY",
+            (
+                f"The battle is in its final {FRENZY_THRESHOLD_SECONDS} seconds.\n"
+                "**No more time extensions** from takeovers.\n"
+                "Last GIF standing when the countdown ends wins.\n\n"
+                f"**Bonuses:** Takeover XP x{FRENZY_TAKEOVER_XP_MULTIPLIER} · "
+                "winner / participation points unchanged"
+            ),
+        )
+        embed.color = discord.Color.orange()
     else:
-        embed = make_embed("🔥 GIF Battle Active", "A different battler can steal the lead and add a little more time to the round.")
+        embed = make_embed(
+            "🔥 GIF Battle Active",
+            "A different battler can steal the lead and add a little more time to the round."
+        )
+        embed.color = discord.Color.blurple()
 
     embed.add_field(name="Current Leader", value=leader_name, inline=True)
     embed.add_field(name="Participants", value=str(len(active_round.participant_ids)), inline=True)
     embed.add_field(name="GIFs", value=str(len(active_round.gif_messages)), inline=True)
     embed.add_field(name="Started", value=started_line, inline=False)
+
     if is_expired:
         embed.add_field(name="Status", value="Expired — closing battle...", inline=True)
+    elif is_frenzy:
+        embed.add_field(name="Status", value="Final Frenzy — no more time extensions", inline=True)
+        embed.add_field(name="Countdown", value=format_discord_relative_time(deadline), inline=True)
     else:
         embed.add_field(name="Time Remaining", value=format_discord_relative_time(deadline), inline=True)
+
     embed.add_field(name="Deadline", value=format_discord_full_time(deadline), inline=True)
     embed.add_field(name="Round", value=f"#{active_round.round_number}", inline=True)
+
+    if is_frenzy and not is_expired:
+        embed.add_field(
+            name="Frenzy Bonuses",
+            value=(
+                f"Takeover XP: **x{FRENZY_TAKEOVER_XP_MULTIPLIER}**\n"
+                "Time Added Per Takeover: **+0 sec**\n"
+                "Winner / participation points: **normal**"
+            ),
+            inline=False,
+        )
+
     return embed
 
 
@@ -382,6 +457,19 @@ async def clear_battle_status_message(channel: discord.TextChannel, status_messa
     except discord.HTTPException as exc:
         logger.warning("Failed to edit ended battle status message %s: %s", status_message_id, exc)
 
+    frenzy_message_id = battle_manager.get_frenzy_message_id()
+    if frenzy_message_id is not None:
+        try:
+            frenzy_message = await channel.fetch_message(frenzy_message_id)
+            archived = make_embed("💤 Final Frenzy Ended", "That frenzy card is now archived.")
+            await frenzy_message.edit(content=None, embed=archived)
+        except discord.NotFound:
+            pass
+        except discord.Forbidden:
+            logger.warning("Missing permission to edit frenzy message %s.", frenzy_message_id)
+        except discord.HTTPException as exc:
+            logger.warning("Failed to edit frenzy message %s: %s", frenzy_message_id, exc)
+
 
 async def sync_commands() -> None:
     try:
@@ -475,6 +563,8 @@ async def battle_expiry_loop() -> None:
             await close_active_round_and_announce(channel=channel, manual_end=False)
             return
 
+        battle_manager.maybe_start_frenzy()
+        await maybe_announce_frenzy(channel)
         await upsert_battle_status_message(channel)
 
     except Exception:
@@ -525,6 +615,11 @@ async def on_message(message: discord.Message) -> None:
             battle_timeout_seconds=current_timeout_seconds(),
             takeover_time_bonus_seconds=current_takeover_time_bonus_seconds(),
         )
+
+        # Instant frenzy trigger (no loop delay)
+        if result.frenzy_just_started and isinstance(message.channel, discord.TextChannel):
+            await maybe_announce_frenzy(message.channel)
+
         logger.info(
             "GIF battle update | started=%s | leader_changed=%s | time_bonus_applied=%s | leader=%s | participants=%s | deadline=%s | message_id=%s",
             result.round_started,
@@ -537,16 +632,25 @@ async def on_message(message: discord.Message) -> None:
         )
 
         if result.leader_changed:
-            live_xp = points_manager.award_takeover_xp(message.author.id)
+            takeover_multiplier = FRENZY_TAKEOVER_XP_MULTIPLIER if result.is_frenzy else 1
+            live_xp = points_manager.award_takeover_xp(
+                message.author.id,
+                multiplier=takeover_multiplier,
+            )
             logger.info(
-                "Takeover XP awarded | user_id=%s | xp=%s | old_level=%s | new_level=%s",
+                "Takeover XP awarded | user_id=%s | xp=%s | old_level=%s | new_level=%s | frenzy=%s",
                 message.author.id,
                 live_xp.xp_earned,
                 live_xp.old_level,
                 live_xp.new_level,
+                result.is_frenzy,
             )
 
-            if live_xp.leveled_up and isinstance(message.channel, discord.TextChannel) and isinstance(message.author, discord.Member):
+            if (
+                    live_xp.leveled_up
+                    and isinstance(message.channel, discord.TextChannel)
+                    and isinstance(message.author, discord.Member)
+            ):
                 await message.channel.send(
                     embed=build_level_up_embed(
                         member=message.author,

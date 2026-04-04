@@ -254,10 +254,10 @@ class PointsManager:
             ),
         )[:limit]
 
-    def award_takeover_xp(self, user_id: int) -> LiveXpAwardResult:
+    def award_takeover_xp(self, user_id: int, multiplier: int = 1) -> LiveXpAwardResult:
         stats = self.get_or_create_user_stats(user_id)
         old_level = stats.level
-        xp_amount = self._level_config.takeover_xp
+        xp_amount = self._level_config.takeover_xp * max(1, multiplier)
 
         self._award_xp(user_id, xp_amount)
         self.save_state()
