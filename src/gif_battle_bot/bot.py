@@ -100,7 +100,7 @@ def build_battle_status_embed(*, guild: discord.Guild | None, active_round) -> d
     leader_user_id = active_round.last_gif_user_id
     leader = guild.get_member(leader_user_id) if guild else None
     leader_name = leader.mention if leader else f"<@{leader_user_id}>"
-    deadline = active_round.deadline_at
+    deadline = active_round.deadline_at or active_round.last_activity_at
     started_line = format_discord_full_time(active_round.started_at)
     is_expired = discord.utils.utcnow() >= deadline
 

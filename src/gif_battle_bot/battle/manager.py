@@ -160,7 +160,7 @@ class BattleManager:
     def get_deadline(self) -> datetime | None:
         if self._active_round is None:
             return None
-        return self._active_round.deadline_at
+        return self._active_round.deadline_at or self._active_round.last_activity_at
 
     def is_round_expired(self) -> bool:
         if self._active_round is None:
