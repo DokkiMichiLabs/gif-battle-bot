@@ -8,12 +8,17 @@ import discord
 
 URL_REGEX = re.compile(r"https?://[^\s<>()]+", re.IGNORECASE)
 
-GIF_HOST_KEYWORDS = (
+GIF_PROVIDER_HOSTS = (
     "tenor.com",
     "giphy.com",
     "media.giphy.com",
     "i.giphy.com",
+    "klipy.com",
+    "static.klipy.com",
 )
+
+GIF_PROVIDER_MEDIA_EXTENSIONS = (".gif", ".mp4", ".webp")
+GIF_PROVIDER_PATH_SEGMENTS = {"gif", "gifs"}
 
 
 def extract_urls(text: str) -> list[str]:
@@ -29,9 +34,18 @@ def is_gif_url(url: str) -> bool:
         return True
 
     parsed = urlparse(lowered)
-    netloc = parsed.netloc
+    netloc = parsed.netloc.removeprefix("www.")
+    path = parsed.path
 
-    return any(host in netloc for host in GIF_HOST_KEYWORDS)
+    is_known_provider = any(netloc == host or netloc.endswith(f".{host}") for host in GIF_PROVIDER_HOSTS)
+    if not is_known_provider:
+        return False
+
+    path_segments = {segment for segment in path.strip("/").split("/") if segment}
+    if path_segments & GIF_PROVIDER_PATH_SEGMENTS:
+        return True
+
+    return path.endswith(GIF_PROVIDER_MEDIA_EXTENSIONS)
 
 
 def attachment_is_gif(attachment: discord.Attachment) -> bool:
