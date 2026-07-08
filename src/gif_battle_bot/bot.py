@@ -670,112 +670,172 @@ async def on_ready() -> None:
     await sync_commands()
 
 
+def embed_debug_rows(message: discord.Message) -> list[dict[str, str | None]]:
+    return [
+        {
+            "url": embed.url,
+            "image": embed.image.url if embed.image else None,
+            "thumbnail": embed.thumbnail.url if embed.thumbnail else None,
+            "video": embed.video.url if embed.video else None,
+        }
+        for embed in message.embeds
+    ]
+
+
+def message_already_tracked(message: discord.Message) -> bool:
+    active_round = battle_manager.get_active_round()
+    return active_round is not None and message.id in active_round.gif_messages
+
+
+async def handle_battle_message(message: discord.Message, *, source: str) -> None:
+    logger.info(
+        "Message received | source=%s | id=%s | channel=%s | author=%s | bot=%s | content=%r | attachments=%s | embeds=%s",
+        source,
+        message.id,
+        message.channel.id,
+        message.author.id,
+        message.author.bot,
+        message.content,
+        len(message.attachments),
+        len(message.embeds),
+    )
+
+    if message.author.bot:
+        logger.debug("Ignoring bot-authored message %s from %s.", message.id, source)
+        return
+
+    if message.channel.id != settings.battle_channel_id:
+        logger.debug("Ignoring message %s from non-battle channel %s.", message.id, message.channel.id)
+        return
+
+    gif_reason = get_gif_detection_reason(message)
+    logger.info(
+        "Battle channel message inspected | source=%s | message_id=%s | gif_detected=%s | reason=%s | content=%r | attachments=%s | embeds=%s | embed_details=%s",
+        source,
+        message.id,
+        gif_reason is not None,
+        gif_reason,
+        message.content,
+        len(message.attachments),
+        len(message.embeds),
+        embed_debug_rows(message),
+    )
+
+    if gif_reason is None:
+        return
+
+    if message_already_tracked(message):
+        logger.info("Skipping already-tracked GIF message %s from %s.", message.id, source)
+        return
+
+    if isinstance(message.channel, discord.TextChannel):
+        await close_expired_round_if_needed(message.channel)
+
+    result = battle_manager.handle_gif_message(
+        channel_id=message.channel.id,
+        user_id=message.author.id,
+        message_id=message.id,
+        battle_timeout_seconds=current_timeout_seconds(),
+        takeover_time_bonus_seconds=current_takeover_time_bonus_seconds(),
+    )
+
+    if result.round_started:
+        logger.info(
+            "Round #%s started | source=%s | channel=%s | leader=%s | deadline=%s | trigger_message=%s",
+            battle_manager.get_active_round().round_number if battle_manager.get_active_round() else "unknown",
+            source,
+            message.channel.id,
+            result.current_leader_user_id,
+            result.deadline_at.isoformat(),
+            message.id,
+        )
+
+    # Instant frenzy trigger (no loop delay)
+    if result.frenzy_just_started and isinstance(message.channel, discord.TextChannel):
+        await maybe_announce_frenzy(message.channel)
+
+    logger.info(
+        "GIF battle update | source=%s | started=%s | leader_changed=%s | time_bonus_applied=%s | leader=%s | participants=%s | deadline=%s | message_id=%s | reason=%s",
+        source,
+        result.round_started,
+        result.leader_changed,
+        result.time_bonus_applied,
+        result.current_leader_user_id,
+        result.participant_count,
+        result.deadline_at.isoformat(),
+        message.id,
+        gif_reason,
+    )
+
+    if result.leader_changed:
+        takeover_multiplier = FRENZY_TAKEOVER_XP_MULTIPLIER if result.is_frenzy else 1
+        live_xp = points_manager.award_takeover_xp(
+            message.author.id,
+            multiplier=takeover_multiplier,
+        )
+        logger.info(
+            "Takeover XP awarded | source=%s | user_id=%s | xp=%s | old_level=%s | new_level=%s | frenzy=%s",
+            source,
+            message.author.id,
+            live_xp.xp_earned,
+            live_xp.old_level,
+            live_xp.new_level,
+            result.is_frenzy,
+        )
+
+        if (
+                live_xp.leveled_up
+                and isinstance(message.channel, discord.TextChannel)
+                and isinstance(message.author, discord.Member)
+        ):
+            await message.channel.send(
+                embed=build_level_up_embed(
+                    member=message.author,
+                    old_level=live_xp.old_level,
+                    new_level=live_xp.new_level,
+                    xp_earned=live_xp.xp_earned,
+                )
+            )
+
+    if isinstance(message.channel, discord.TextChannel):
+        await upsert_battle_status_message(message.channel)
+
+
 @bot.event
 async def on_message(message: discord.Message) -> None:
     try:
-        logger.info(
-            "Message received | id=%s | channel=%s | author=%s | bot=%s | content_len=%s | attachments=%s | embeds=%s",
-            message.id,
-            message.channel.id,
-            message.author.id,
-            message.author.bot,
-            len(message.content or ""),
-            len(message.attachments),
-            len(message.embeds),
-        )
-
-        if message.author.bot:
-            logger.debug("Ignoring bot-authored message %s.", message.id)
-            return
-
-        if message.channel.id != settings.battle_channel_id:
-            logger.debug("Ignoring message %s from non-battle channel %s.", message.id, message.channel.id)
-            return
-
-        gif_reason = get_gif_detection_reason(message)
-        logger.info(
-            "Battle channel message inspected | message_id=%s | gif_detected=%s | reason=%s | content_visible=%s",
-            message.id,
-            gif_reason is not None,
-            gif_reason,
-            bool(message.content),
-        )
-
-        if gif_reason is None:
-            return
-
-        if isinstance(message.channel, discord.TextChannel):
-            await close_expired_round_if_needed(message.channel)
-
-        result = battle_manager.handle_gif_message(
-            channel_id=message.channel.id,
-            user_id=message.author.id,
-            message_id=message.id,
-            battle_timeout_seconds=current_timeout_seconds(),
-            takeover_time_bonus_seconds=current_takeover_time_bonus_seconds(),
-        )
-
-        if result.round_started:
-            logger.info(
-                "Round #%s started | channel=%s | leader=%s | deadline=%s | trigger_message=%s",
-                battle_manager.get_active_round().round_number if battle_manager.get_active_round() else "unknown",
-                message.channel.id,
-                result.current_leader_user_id,
-                result.deadline_at.isoformat(),
-                message.id,
-            )
-
-        # Instant frenzy trigger (no loop delay)
-        if result.frenzy_just_started and isinstance(message.channel, discord.TextChannel):
-            await maybe_announce_frenzy(message.channel)
-
-        logger.info(
-            "GIF battle update | started=%s | leader_changed=%s | time_bonus_applied=%s | leader=%s | participants=%s | deadline=%s | message_id=%s | reason=%s",
-            result.round_started,
-            result.leader_changed,
-            result.time_bonus_applied,
-            result.current_leader_user_id,
-            result.participant_count,
-            result.deadline_at.isoformat(),
-            message.id,
-            gif_reason,
-        )
-
-        if result.leader_changed:
-            takeover_multiplier = FRENZY_TAKEOVER_XP_MULTIPLIER if result.is_frenzy else 1
-            live_xp = points_manager.award_takeover_xp(
-                message.author.id,
-                multiplier=takeover_multiplier,
-            )
-            logger.info(
-                "Takeover XP awarded | user_id=%s | xp=%s | old_level=%s | new_level=%s | frenzy=%s",
-                message.author.id,
-                live_xp.xp_earned,
-                live_xp.old_level,
-                live_xp.new_level,
-                result.is_frenzy,
-            )
-
-            if (
-                    live_xp.leveled_up
-                    and isinstance(message.channel, discord.TextChannel)
-                    and isinstance(message.author, discord.Member)
-            ):
-                await message.channel.send(
-                    embed=build_level_up_embed(
-                        member=message.author,
-                        old_level=live_xp.old_level,
-                        new_level=live_xp.new_level,
-                        xp_earned=live_xp.xp_earned,
-                    )
-                )
-
-        if isinstance(message.channel, discord.TextChannel):
-            await upsert_battle_status_message(message.channel)
+        await handle_battle_message(message, source="create")
     except Exception:
         logger.exception("Unhandled error while processing message %s", message.id)
     finally:
         await bot.process_commands(message)
+
+
+@bot.event
+async def on_message_edit(before: discord.Message, after: discord.Message) -> None:
+    try:
+        if before.channel.id != settings.battle_channel_id and after.channel.id != settings.battle_channel_id:
+            return
+
+        before_reason = get_gif_detection_reason(before)
+        after_reason = get_gif_detection_reason(after)
+        logger.info(
+            "Message edit inspected | message_id=%s | before_gif=%s | after_gif=%s | before_embeds=%s | after_embeds=%s | after_embed_details=%s",
+            after.id,
+            before_reason,
+            after_reason,
+            len(before.embeds),
+            len(after.embeds),
+            embed_debug_rows(after),
+        )
+
+        if before_reason is not None:
+            logger.debug("Ignoring edit for already-detectable GIF message %s.", after.id)
+            return
+
+        await handle_battle_message(after, source="edit")
+    except Exception:
+        logger.exception("Unhandled error while processing message edit %s", after.id)
 
 
 @bot.event

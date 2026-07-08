@@ -56,6 +56,8 @@ def embed_looks_like_gif(embed: discord.Embed) -> bool:
         possible_urls.append(embed.thumbnail.url)
     if embed.image and embed.image.url:
         possible_urls.append(embed.image.url)
+    if embed.video and embed.video.url:
+        possible_urls.append(embed.video.url)
 
     return any(is_gif_url(url) for url in possible_urls)
 
