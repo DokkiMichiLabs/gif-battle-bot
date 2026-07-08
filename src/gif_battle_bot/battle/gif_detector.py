@@ -60,17 +60,21 @@ def embed_looks_like_gif(embed: discord.Embed) -> bool:
     return any(is_gif_url(url) for url in possible_urls)
 
 
-def message_contains_gif(message: discord.Message) -> bool:
+def get_gif_detection_reason(message: discord.Message) -> str | None:
     for attachment in message.attachments:
         if attachment_is_gif(attachment):
-            return True
+            return f"attachment:{attachment.filename or attachment.url}"
 
     for url in extract_urls(message.content):
         if is_gif_url(url):
-            return True
+            return f"content_url:{url}"
 
     for embed in message.embeds:
         if embed_looks_like_gif(embed):
-            return True
+            return "embed_url"
 
-    return False
+    return None
+
+
+def message_contains_gif(message: discord.Message) -> bool:
+    return get_gif_detection_reason(message) is not None

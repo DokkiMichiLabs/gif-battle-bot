@@ -9,7 +9,7 @@ from discord.ext import commands, tasks
 
 from gif_battle_bot.battle.manager import BattleManager
 from gif_battle_bot.core.config import load_settings
-from gif_battle_bot.battle.gif_detector import message_contains_gif
+from gif_battle_bot.battle.gif_detector import get_gif_detection_reason
 from gif_battle_bot.battle.points_manager import LevelConfig, PointsManager
 from gif_battle_bot.services.role_manager import RoleManager
 from gif_battle_bot.core.runtime_config import RuntimeConfig
@@ -489,6 +489,44 @@ async def sync_commands() -> None:
         logger.warning("Failed to sync app commands: %s", exc)
 
 
+async def log_battle_channel_diagnostics() -> None:
+    channel = bot.get_channel(settings.battle_channel_id)
+    if channel is None:
+        try:
+            channel = await bot.fetch_channel(settings.battle_channel_id)
+        except discord.NotFound:
+            logger.error("Configured battle channel %s was not found.", settings.battle_channel_id)
+            return
+        except discord.Forbidden:
+            logger.error("Missing permission to fetch configured battle channel %s.", settings.battle_channel_id)
+            return
+        except discord.HTTPException as exc:
+            logger.warning("Could not fetch configured battle channel %s: %s", settings.battle_channel_id, exc)
+            return
+
+    if not isinstance(channel, discord.TextChannel):
+        logger.warning("Configured battle channel %s is not a guild text channel: %s", settings.battle_channel_id, type(channel).__name__)
+        return
+
+    me = channel.guild.me
+    if me is None:
+        logger.warning("Could not resolve bot member in guild %s for channel permission diagnostics.", channel.guild.id)
+        return
+
+    permissions = channel.permissions_for(me)
+    logger.info(
+        "Battle channel diagnostics | guild=%s | channel=%s (%s) | view=%s | read_history=%s | send=%s | embed_links=%s | add_reactions=%s",
+        channel.guild.id,
+        channel.name,
+        channel.id,
+        permissions.view_channel,
+        permissions.read_message_history,
+        permissions.send_messages,
+        permissions.embed_links,
+        permissions.add_reactions,
+    )
+
+
 async def finalize_battle_round(*, finished_round, guild: discord.Guild | None, manual_end: bool) -> discord.Embed:
     award_summary = points_manager.award_round_points(finished_round)
     if guild is not None:
@@ -509,6 +547,14 @@ async def close_active_round_and_announce(
     if finished_round is None:
         return None
 
+    logger.info(
+        "Round #%s ending | manual=%s | winner=%s | participants=%s | gifs=%s",
+        finished_round.round_number,
+        manual_end,
+        finished_round.last_gif_user_id,
+        len(finished_round.participant_ids),
+        len(finished_round.gif_messages),
+    )
     await clear_battle_status_message(channel, status_message_id)
     summary_embed = await finalize_battle_round(
         finished_round=finished_round,
@@ -592,8 +638,33 @@ async def on_ready() -> None:
     logger.info("Database URL configured.")
     logger.info("Champ role name: %s", current_champ_role_name())
     logger.info("Chaos role name: %s", current_chaos_role_name())
+    logger.info(
+        "Discord intents | guilds=%s | messages=%s | reactions=%s | members=%s | message_content=%s",
+        intents.guilds,
+        intents.messages,
+        intents.reactions,
+        intents.members,
+        intents.message_content,
+    )
+
+    active_round = battle_manager.get_active_round()
+    if active_round is None:
+        logger.info("No active battle round restored on startup.")
+    else:
+        logger.info(
+            "Restored active round #%s | channel=%s | leader=%s | deadline=%s | expired=%s | gifs=%s",
+            active_round.round_number,
+            active_round.channel_id,
+            active_round.last_gif_user_id,
+            active_round.deadline_at.isoformat(),
+            battle_manager.is_round_expired(),
+            len(active_round.gif_messages),
+        )
+
+    await log_battle_channel_diagnostics()
 
     if not battle_expiry_loop.is_running():
+        logger.info("Starting battle expiry loop.")
         battle_expiry_loop.start()
 
     await sync_commands()
@@ -601,10 +672,38 @@ async def on_ready() -> None:
 
 @bot.event
 async def on_message(message: discord.Message) -> None:
-    if message.author.bot:
-        return
+    try:
+        logger.info(
+            "Message received | id=%s | channel=%s | author=%s | bot=%s | content_len=%s | attachments=%s | embeds=%s",
+            message.id,
+            message.channel.id,
+            message.author.id,
+            message.author.bot,
+            len(message.content or ""),
+            len(message.attachments),
+            len(message.embeds),
+        )
 
-    if message.channel.id == settings.battle_channel_id and message_contains_gif(message):
+        if message.author.bot:
+            logger.debug("Ignoring bot-authored message %s.", message.id)
+            return
+
+        if message.channel.id != settings.battle_channel_id:
+            logger.debug("Ignoring message %s from non-battle channel %s.", message.id, message.channel.id)
+            return
+
+        gif_reason = get_gif_detection_reason(message)
+        logger.info(
+            "Battle channel message inspected | message_id=%s | gif_detected=%s | reason=%s | content_visible=%s",
+            message.id,
+            gif_reason is not None,
+            gif_reason,
+            bool(message.content),
+        )
+
+        if gif_reason is None:
+            return
+
         if isinstance(message.channel, discord.TextChannel):
             await close_expired_round_if_needed(message.channel)
 
@@ -616,12 +715,22 @@ async def on_message(message: discord.Message) -> None:
             takeover_time_bonus_seconds=current_takeover_time_bonus_seconds(),
         )
 
+        if result.round_started:
+            logger.info(
+                "Round #%s started | channel=%s | leader=%s | deadline=%s | trigger_message=%s",
+                battle_manager.get_active_round().round_number if battle_manager.get_active_round() else "unknown",
+                message.channel.id,
+                result.current_leader_user_id,
+                result.deadline_at.isoformat(),
+                message.id,
+            )
+
         # Instant frenzy trigger (no loop delay)
         if result.frenzy_just_started and isinstance(message.channel, discord.TextChannel):
             await maybe_announce_frenzy(message.channel)
 
         logger.info(
-            "GIF battle update | started=%s | leader_changed=%s | time_bonus_applied=%s | leader=%s | participants=%s | deadline=%s | message_id=%s",
+            "GIF battle update | started=%s | leader_changed=%s | time_bonus_applied=%s | leader=%s | participants=%s | deadline=%s | message_id=%s | reason=%s",
             result.round_started,
             result.leader_changed,
             result.time_bonus_applied,
@@ -629,6 +738,7 @@ async def on_message(message: discord.Message) -> None:
             result.participant_count,
             result.deadline_at.isoformat(),
             message.id,
+            gif_reason,
         )
 
         if result.leader_changed:
@@ -662,37 +772,66 @@ async def on_message(message: discord.Message) -> None:
 
         if isinstance(message.channel, discord.TextChannel):
             await upsert_battle_status_message(message.channel)
-
-    await bot.process_commands(message)
+    except Exception:
+        logger.exception("Unhandled error while processing message %s", message.id)
+    finally:
+        await bot.process_commands(message)
 
 
 @bot.event
 async def on_raw_reaction_add(payload: discord.RawReactionActionEvent) -> None:
-    if payload.channel_id != settings.battle_channel_id:
-        return
-    if payload.user_id == bot.user.id if bot.user else False:
-        return
+    try:
+        logger.info(
+            "Reaction add received | channel=%s | message=%s | user=%s | emoji=%s",
+            payload.channel_id,
+            payload.message_id,
+            payload.user_id,
+            emoji_to_key(payload.emoji),
+        )
+        if payload.channel_id != settings.battle_channel_id:
+            logger.debug("Ignoring reaction add in non-battle channel %s.", payload.channel_id)
+            return
+        if bot.user is not None and payload.user_id == bot.user.id:
+            logger.debug("Ignoring bot reaction add on message %s.", payload.message_id)
+            return
 
-    changed = battle_manager.record_reaction_add(
-        message_id=payload.message_id,
-        reactor_user_id=payload.user_id,
-        emoji_key=emoji_to_key(payload.emoji),
-    )
-    if changed:
-        logger.info("Reaction tracked | message_id=%s | user_id=%s | emoji=%s", payload.message_id, payload.user_id, emoji_to_key(payload.emoji))
+        changed = battle_manager.record_reaction_add(
+            message_id=payload.message_id,
+            reactor_user_id=payload.user_id,
+            emoji_key=emoji_to_key(payload.emoji),
+        )
+        if changed:
+            logger.info("Reaction tracked | message_id=%s | user_id=%s | emoji=%s", payload.message_id, payload.user_id, emoji_to_key(payload.emoji))
+        else:
+            logger.info("Reaction add ignored by battle state | message_id=%s | user_id=%s", payload.message_id, payload.user_id)
+    except Exception:
+        logger.exception("Unhandled error while processing reaction add for message %s", payload.message_id)
 
 
 @bot.event
 async def on_raw_reaction_remove(payload: discord.RawReactionActionEvent) -> None:
-    if payload.channel_id != settings.battle_channel_id:
-        return
-    changed = battle_manager.record_reaction_remove(
-        message_id=payload.message_id,
-        reactor_user_id=payload.user_id,
-        emoji_key=emoji_to_key(payload.emoji),
-    )
-    if changed:
-        logger.info("Reaction removed | message_id=%s | user_id=%s | emoji=%s", payload.message_id, payload.user_id, emoji_to_key(payload.emoji))
+    try:
+        logger.info(
+            "Reaction remove received | channel=%s | message=%s | user=%s | emoji=%s",
+            payload.channel_id,
+            payload.message_id,
+            payload.user_id,
+            emoji_to_key(payload.emoji),
+        )
+        if payload.channel_id != settings.battle_channel_id:
+            logger.debug("Ignoring reaction remove in non-battle channel %s.", payload.channel_id)
+            return
+        changed = battle_manager.record_reaction_remove(
+            message_id=payload.message_id,
+            reactor_user_id=payload.user_id,
+            emoji_key=emoji_to_key(payload.emoji),
+        )
+        if changed:
+            logger.info("Reaction removed | message_id=%s | user_id=%s | emoji=%s", payload.message_id, payload.user_id, emoji_to_key(payload.emoji))
+        else:
+            logger.info("Reaction remove ignored by battle state | message_id=%s | user_id=%s", payload.message_id, payload.user_id)
+    except Exception:
+        logger.exception("Unhandled error while processing reaction remove for message %s", payload.message_id)
 
 
 @bot.check
@@ -947,6 +1086,12 @@ bot.tree.add_command(admin_group, guild=discord.Object(id=settings.guild_id) if 
 
 
 def main() -> None:
+    logger.info(
+        "Starting GIF Battle bot | token_configured=%s | battle_channel_id=%s | guild_id=%s",
+        bool(settings.discord_token),
+        settings.battle_channel_id,
+        settings.guild_id,
+    )
     bot.run(settings.discord_token)
 
 
